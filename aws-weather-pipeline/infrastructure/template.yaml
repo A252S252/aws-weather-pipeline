@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "AWS Weather Data Pipeline - Lambda + S3 + Glue + Athena"
+
+Resources:
+  # === S3バケット ===
+  WeatherDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "weather-raw-${AWS::Region}-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+
+  # === Lambda関数（天気データ取得）===
+  WeatherIngestLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "WeatherIngestOpenMeteo"
+      Handler: "weather_ingest_openmeteo.lambda_handler"
+      Runtime: python3.13
+      Timeout: 30
+      MemorySize: 128
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref WeatherDataBucket
+        S3Key: "lambda/weather_ingest_openmeteo.zip"
+
+  # === Lambda関数（Glue Crawler起動）===
+  StartGlueCrawlerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "StartGlueCrawler"
+      Handler: "start_glue_crawler.lambda_handler"
+      Runtime: python3.13
+      Timeout: 30
+      MemorySize: 128
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref WeatherDataBucket
+        S3Key: "lambda/start_glue_crawler.zip"
+
+  # === IAMロール（Lambda実行権限）===
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "WeatherPipelineLambdaRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AWSGlueConsoleFullAccess
+
+  # === EventBridge（スケジュール）===
+  WeatherIngestRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: "weather-lambda-hourly"
+      ScheduleExpression: "rate(1 hour)"
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt WeatherIngestLambda.Arn
+          Id: "WeatherIngestTarget"
+
+  GlueCrawlerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: "weather-raw-crawler"
+      ScheduleExpression: "rate(1 day)"
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt StartGlueCrawlerLambda.Arn
+          Id: "GlueCrawlerTarget"
+
+Outputs:
+  S3BucketName:
+    Value: !Ref WeatherDataBucket
+    Description: "S3 bucket for weather data"
+  WeatherIngestLambdaName:
+    Value: !Ref WeatherIngestLambda
+  StartGlueCrawlerLambdaName:
+    Value: !Ref StartGlueCrawlerLambda
